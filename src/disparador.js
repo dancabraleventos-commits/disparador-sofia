@@ -2,9 +2,9 @@
  * Disparador Sofia — Railway Service
  *
  * Substitui o workflow N8N "Disparador Sofia — 1 lead por vez"
- * Roda a cada 40 segundos, busca 1 lead novo e envia "Oi, tudo bem? 😊"
- * Sem limite de execuções, sem timeout de 60s.
- * Só dispara em horário comercial: Seg-Sex, 8h-18h (horário de SP)
+ * Intervalo de 10 minutos entre cada envio.
+ * Limite de 40 leads por dia (reseta à meia-noite).
+ * Só dispara em horário comercial: Seg-Sáb, 8h-17h (horário de SP)
  */
 
 const CONFIG = {
@@ -14,24 +14,69 @@ const CONFIG = {
   EVOLUTION_API_KEY: process.env.EVOLUTION_API_KEY,
   EVOLUTION_INSTANCE: process.env.EVOLUTION_INSTANCE || 'Sofia',
   SOFIA_URL: process.env.SOFIA_URL,
-  INTERVALO_MS: parseInt(process.env.INTERVALO_MS || '40000'),
+  INTERVALO_MS: parseInt(process.env.INTERVALO_MS || '600000'), // 10 minutos
+  LIMITE_DIARIO: parseInt(process.env.LIMITE_DIARIO || '40'),
 };
 
 let rodando = false;
 
+// Contador diário — reseta quando o dia muda
+let contadorDiario = 0;
+let ultimoDia = null;
+
+function getSPDate() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+}
+
+function resetarContadorSeNovoDia() {
+  const sp = getSPDate();
+  const diaHoje = sp.toDateString();
+  if (ultimoDia !== diaHoje) {
+    contadorDiario = 0;
+    ultimoDia = diaHoje;
+    console.log(`[Disparador] Novo dia — contador resetado.`);
+  }
+}
+
 function dentroDoHorarioComercial() {
-  const agora = new Date();
-  // Converte para horário de São Paulo (UTC-3)
-  const sp = new Date(agora.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  const sp = getSPDate();
   const hora = sp.getHours();
   const diaSemana = sp.getDay(); // 0=domingo, 6=sábado
 
-  // Apenas Seg (1) a Sex (5)
-  if (diaSemana === 0 || diaSemana === 6) return false;
-  // Das 8h às 18h
-  if (hora < 8 || hora >= 18) return false;
+  // Seg (1) a Sáb (6) — exclui apenas domingo (0)
+  if (diaSemana === 0) return false;
+  // Das 8h às 17h
+  if (hora < 8 || hora >= 17) return false;
 
   return true;
+}
+
+/**
+ * Calcula quantos ms faltam até o próximo horário comercial (8h do próximo dia útil).
+ * Usado para o processo dormir sem ficar logando em loop.
+ */
+function msFateProximoHorario() {
+  const sp = getSPDate();
+  const hora = sp.getHours();
+  const diaSemana = sp.getDay();
+
+  // Próximo início: 8h de hoje ainda? ou amanhã?
+  const proximo = new Date(sp);
+  proximo.setSeconds(0);
+  proximo.setMilliseconds(0);
+
+  if (hora < 8) {
+    // Hoje mesmo às 8h
+    proximo.setHours(8, 0, 0, 0);
+  } else {
+    // Próximo dia útil às 8h
+    proximo.setDate(proximo.getDate() + 1);
+    proximo.setHours(8, 0, 0, 0);
+    // Pula domingo
+    if (proximo.getDay() === 0) proximo.setDate(proximo.getDate() + 1);
+  }
+
+  return proximo - sp;
 }
 
 async function buscarLead() {
@@ -102,9 +147,23 @@ async function atualizarLead(id) {
 }
 
 async function tick() {
-  // Verifica horário comercial antes de qualquer coisa
+  resetarContadorSeNovoDia();
+
+  // Fora do horário: dorme até o próximo horário comercial sem logar em loop
   if (!dentroDoHorarioComercial()) {
-    console.log('[Disparador] Fora do horário comercial (Seg-Sex 8h-18h), aguardando...');
+    const msAteAbertura = msFateProximoHorario();
+    const horas = (msAteAbertura / 3600000).toFixed(1);
+    console.log(`[Disparador] Fora do horário (Seg-Sáb 8h-17h). Dormindo ${horas}h até a abertura...`);
+    setTimeout(iniciarCiclo, msAteAbertura);
+    return;
+  }
+
+  // Atingiu o limite diário
+  if (contadorDiario >= CONFIG.LIMITE_DIARIO) {
+    const msAteAbertura = msFateProximoHorario();
+    const horas = (msAteAbertura / 3600000).toFixed(1);
+    console.log(`[Disparador] Limite diário de ${CONFIG.LIMITE_DIARIO} mensagens atingido. Dormindo até amanhã (${horas}h)...`);
+    setTimeout(iniciarCiclo, msAteAbertura);
     return;
   }
 
@@ -119,7 +178,7 @@ async function tick() {
     const lead = await buscarLead();
 
     if (!lead) {
-      console.log('[Disparador] Nenhum lead pendente.');
+      console.log('[Disparador] Nenhum lead pendente. Próxima verificação em 10 min.');
       return;
     }
 
@@ -134,11 +193,12 @@ async function tick() {
       return;
     }
 
-    console.log(`[Disparador] Enviando para ${nome} (${categoria} — ${cidade}) | ${telefone}`);
+    console.log(`[Disparador] [${contadorDiario + 1}/${CONFIG.LIMITE_DIARIO}] Enviando para ${nome} (${categoria} — ${cidade}) | ${telefone}`);
 
     try {
       await enviarWhatsApp(telefone);
-      console.log(`[Disparador] ✅ WhatsApp enviado para ${telefone}`);
+      contadorDiario++;
+      console.log(`[Disparador] ✅ WhatsApp enviado para ${telefone}. Total hoje: ${contadorDiario}/${CONFIG.LIMITE_DIARIO}`);
     } catch (e) {
       console.error(`[Disparador] ⚠️ Erro no envio, marcando mesmo assim: ${e.message}`);
     }
@@ -159,10 +219,22 @@ async function tick() {
   }
 }
 
+let intervaloAtivo = null;
+
+function iniciarCiclo() {
+  // Limpa intervalo anterior se existir
+  if (intervaloAtivo) {
+    clearInterval(intervaloAtivo);
+    intervaloAtivo = null;
+  }
+
+  tick(); // Executa imediatamente
+  intervaloAtivo = setInterval(tick, CONFIG.INTERVALO_MS);
+}
+
 function iniciar() {
-  console.log(`[Disparador] Iniciando — intervalo: ${CONFIG.INTERVALO_MS / 1000}s`);
-  tick();
-  setInterval(tick, CONFIG.INTERVALO_MS);
+  console.log(`[Disparador] Iniciando — intervalo: ${CONFIG.INTERVALO_MS / 60000} min | limite diário: ${CONFIG.LIMITE_DIARIO} msgs | horário: Seg-Sáb 8h-17h`);
+  iniciarCiclo();
 }
 
 module.exports = { iniciar };
