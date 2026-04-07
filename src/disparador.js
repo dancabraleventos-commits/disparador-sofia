@@ -46,7 +46,7 @@ function dentroDoHorarioComercial() {
   // Seg (1) a Sáb (6) — exclui apenas domingo (0)
   if (diaSemana === 0) return false;
   // Das 8h às 17h
-  if (hora < 8 || hora >= 17) return false;
+  if (hora < 8 || hora >= parseInt(process.env.HORA_FIM || '19')) return false;
 
   return true;
 }
@@ -153,7 +153,7 @@ async function tick() {
   if (!dentroDoHorarioComercial()) {
     const msAteAbertura = msFateProximoHorario();
     const horas = (msAteAbertura / 3600000).toFixed(1);
-    console.log(`[Disparador] Fora do horário (Seg-Sáb 8h-17h). Dormindo ${horas}h até a abertura...`);
+    console.log(`[Disparador] Fora do horário (Seg-Sáb 8h-${process.env.HORA_FIM || 19}h). Dormindo ${horas}h até a abertura...`);
     setTimeout(iniciarCiclo, msAteAbertura);
     return;
   }
@@ -233,7 +233,7 @@ function iniciarCiclo() {
 }
 
 function iniciar() {
-  console.log(`[Disparador] Iniciando — intervalo: ${CONFIG.INTERVALO_MS / 60000} min | limite diário: ${CONFIG.LIMITE_DIARIO} msgs | horário: Seg-Sáb 8h-17h`);
+  console.log(`[Disparador] Iniciando — intervalo: ${CONFIG.INTERVALO_MS / 60000} min | limite diário: ${CONFIG.LIMITE_DIARIO} msgs | horário: Seg-Sáb 8h-${process.env.HORA_FIM || 19}h`);
   iniciarCiclo();
 }
 
