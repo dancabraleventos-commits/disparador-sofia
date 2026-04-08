@@ -14,13 +14,25 @@ const CONFIG = {
   EVOLUTION_API_KEY: process.env.EVOLUTION_API_KEY,
   EVOLUTION_INSTANCE: process.env.EVOLUTION_INSTANCE || 'Sofia',
   SOFIA_URL: process.env.SOFIA_URL,
-  INTERVALO_MS: parseInt(process.env.INTERVALO_MS || '600000'), // 10 minutos
+  INTERVALO_MS: parseInt(process.env.INTERVALO_MS || '600000'),
   LIMITE_DIARIO: parseInt(process.env.LIMITE_DIARIO || '40'),
 };
 
+const ABERTURAS = [
+  'Oi, tudo bem? 😊',
+  'Oi! Tudo bem? 👋',
+  'Oi, tudo bom? 😊',
+  'Olá, tudo bem? 😊',
+  'Oi! Como vai? 😊',
+  'Oi, tudo bem por aí? 😊',
+  'Ei, tudo bem? 😊',
+  'Oi! Tudo certo? 😄',
+  'Bom dia! Tudo bem? 😊',
+  'Boa tarde! Tudo bem? 😊',
+];
+
 let rodando = false;
 
-// Contador diário — reseta quando o dia muda
 let contadorDiario = 0;
 let ultimoDia = null;
 
@@ -41,38 +53,28 @@ function resetarContadorSeNovoDia() {
 function dentroDoHorarioComercial() {
   const sp = getSPDate();
   const hora = sp.getHours();
-  const diaSemana = sp.getDay(); // 0=domingo, 6=sábado
+  const diaSemana = sp.getDay();
 
-  // Seg (1) a Sáb (6) — exclui apenas domingo (0)
   if (diaSemana === 0) return false;
-  // Das 8h às 17h
   if (hora < 8 || hora >= parseInt(process.env.HORA_FIM || '19')) return false;
 
   return true;
 }
 
-/**
- * Calcula quantos ms faltam até o próximo horário comercial (8h do próximo dia útil).
- * Usado para o processo dormir sem ficar logando em loop.
- */
 function msFateProximoHorario() {
   const sp = getSPDate();
   const hora = sp.getHours();
   const diaSemana = sp.getDay();
 
-  // Próximo início: 8h de hoje ainda? ou amanhã?
   const proximo = new Date(sp);
   proximo.setSeconds(0);
   proximo.setMilliseconds(0);
 
   if (hora < 8) {
-    // Hoje mesmo às 8h
     proximo.setHours(8, 0, 0, 0);
   } else {
-    // Próximo dia útil às 8h
     proximo.setDate(proximo.getDate() + 1);
     proximo.setHours(8, 0, 0, 0);
-    // Pula domingo
     if (proximo.getDay() === 0) proximo.setDate(proximo.getDate() + 1);
   }
 
@@ -95,6 +97,7 @@ async function buscarLead() {
 }
 
 async function enviarWhatsApp(telefone) {
+  const texto = ABERTURAS[Math.floor(Math.random() * ABERTURAS.length)];
   const res = await fetch(
     `${CONFIG.EVOLUTION_API_URL}/message/sendText/${CONFIG.EVOLUTION_INSTANCE}`,
     {
@@ -105,7 +108,7 @@ async function enviarWhatsApp(telefone) {
       },
       body: JSON.stringify({
         number: telefone,
-        text: 'Oi, tudo bem? 😊',
+        text: texto,
       }),
     }
   );
@@ -113,6 +116,7 @@ async function enviarWhatsApp(telefone) {
     const err = await res.text();
     throw new Error(`Evolution API falhou: ${res.status} — ${err}`);
   }
+  return texto;
 }
 
 async function notificarSofia(telefone) {
@@ -149,7 +153,6 @@ async function atualizarLead(id) {
 async function tick() {
   resetarContadorSeNovoDia();
 
-  // Fora do horário: dorme até o próximo horário comercial sem logar em loop
   if (!dentroDoHorarioComercial()) {
     const msAteAbertura = msFateProximoHorario();
     const horas = (msAteAbertura / 3600000).toFixed(1);
@@ -158,7 +161,6 @@ async function tick() {
     return;
   }
 
-  // Atingiu o limite diário
   if (contadorDiario >= CONFIG.LIMITE_DIARIO) {
     const msAteAbertura = msFateProximoHorario();
     const horas = (msAteAbertura / 3600000).toFixed(1);
@@ -196,16 +198,15 @@ async function tick() {
     console.log(`[Disparador] [${contadorDiario + 1}/${CONFIG.LIMITE_DIARIO}] Enviando para ${nome} (${categoria} — ${cidade}) | ${telefone}`);
 
     try {
-      await enviarWhatsApp(telefone);
+      const textoEnviado = await enviarWhatsApp(telefone);
       contadorDiario++;
-      console.log(`[Disparador] ✅ WhatsApp enviado para ${telefone}. Total hoje: ${contadorDiario}/${CONFIG.LIMITE_DIARIO}`);
+      console.log(`[Disparador] ✅ WhatsApp enviado para ${telefone} | msg: "${textoEnviado}" | Total hoje: ${contadorDiario}/${CONFIG.LIMITE_DIARIO}`);
     } catch (e) {
       console.error(`[Disparador] ⚠️ Erro no envio, marcando mesmo assim: ${e.message}`);
     }
 
     await atualizarLead(lead.id);
 
-    // Notifica Sofia para registrar timestamp (filtro de bot 10s)
     try {
       await notificarSofia(telefone);
     } catch (e) {
@@ -222,13 +223,12 @@ async function tick() {
 let intervaloAtivo = null;
 
 function iniciarCiclo() {
-  // Limpa intervalo anterior se existir
   if (intervaloAtivo) {
     clearInterval(intervaloAtivo);
     intervaloAtivo = null;
   }
 
-  tick(); // Executa imediatamente
+  tick();
   intervaloAtivo = setInterval(tick, CONFIG.INTERVALO_MS);
 }
 
